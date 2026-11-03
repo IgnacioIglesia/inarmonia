@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Validación: Inarmonía</title>
+  <link rel="stylesheet" href="../css/estilos.css">
+</head>
+<body>
+  <header class="cabecera">
+    <h1>Validación con señales sintéticas</h1>
+    <p>Generamos notas con <strong>f0</strong> y <strong>B</strong> conocidos (con ruido, zumbido de 50 Hz y ataque ruidoso),
+       pasamos cada una por el pipeline completo y comparamos lo medido con lo verdadero.</p>
+  </header>
+
+  <main class="contenedor">
+    <section class="tarjeta">
+      <h2>Criterios de aceptación</h2>
+      <ul>
+        <li>Error de f0 menor a <strong>0.05 Hz</strong>.</li>
+        <li>Error relativo de B menor a <strong>5 %</strong>.</li>
+        <li>Frecuencias de armónicos: error máximo reportado (sin umbral fijo: se muestra para discutir).</li>
+      </ul>
+      <button id="btn-validar" class="boton">Ejecutar validación</button>
+      <p id="estado" class="nota"></p>
+    </section>
+
+    <section class="tarjeta">
+      <h2>Resultados</h2>
+      <div class="tabla-scroll">
+        <table class="tabla">
+          <thead>
+            <tr>
+              <th>Caso</th>
+              <th>f0 real (Hz)</th>
+              <th>f0 medida (Hz)</th>
+              <th>Error f0 (Hz)</th>
+              <th>B real</th>
+              <th>B medido</th>
+              <th>Error B (%)</th>
+              <th>Armónicos hallados / reales</th>
+              <th>Error máx. armónico (Hz)</th>
+              <th>Nota</th>
+              <th>Resultado</th>
+            </tr>
+          </thead>
+          <tbody id="cuerpo-tabla"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { generarNotaSintetica } from './sintetica.js';
+    import { prepararSenal } from '../js/audio.js';
+    import { analizarNota } from '../js/pipeline.js';
+
+    // Casos: los tres del enunciado y tres más difíciles (ruido alto, zumbido fuerte,
+    // y una nota que coincide con un armónico del zumbido: 150 Hz).
+    const CASOS = [
+      { nombre: 'Enunciado 1', f0: 55, B: 3e-4 },
+      { nombre: 'Enunciado 2', f0: 110, B: 1e-4 },
+      { nombre: 'Enunciado 3', f0: 440, B: 1e-5 },
+      { nombre: 'Ruido alto', f0: 55, B: 3e-4, ruidoSigma: 0.03, zumbidoAmp: 0.05 },
+      { nombre: 'Zumbido fuerte', f0: 110, B: 1e-4, zumbidoAmp: 0.2 },
+      { nombre: 'Coincide con zumbido (150 Hz)', f0: 150, B: 2e-4 },
+    ];
+
+    const LIMITE_F0_HZ = 0.05;
+    const LIMITE_B_PCT = 5;
+
+    const formato = (valor, decimales) => (valor === null || valor === undefined ? '—' : valor.toFixed(decimales));
+
+    // Corre un caso: genera, procesa y compara con la verdad.
+    function validarCaso(caso) {
+      const { x, fs, verdad } = generarNotaSintetica(caso);
+      const r = analizarNota(prepararSenal([x]), fs);
+
+      const errorF0 = r.f0 === null ? null : r.f0 - caso.f0;
+      const errorB = r.B === null ? null : (100 * (r.B - caso.B)) / caso.B;
+
+      // Error máximo de frecuencia de cada armónico encontrado frente al modelo verdadero.
+      let errorMax = null;
+      for (const a of r.armonicos) {
+        const real = a.k * caso.f0 * Math.sqrt(1 + caso.B * a.k * a.k);
+        const error = Math.abs(a.frecuenciaHz - real);
+        errorMax = errorMax === null ? error : Math.max(errorMax, error);
+      }
+
+      const aprueba =
+        errorF0 !== null &&
+        errorB !== null &&
+        Math.abs(errorF0) < LIMITE_F0_HZ &&
+        Math.abs(errorB) < LIMITE_B_PCT;
+
+      return { caso, r, errorF0, errorB, errorMax, aprueba, cantReales: verdad.armonicos.length };
+    }
+
+    function pintarFila(v) {
+      const fila = document.createElement('tr');
+      const celdas = [
+        v.caso.nombre,
+        formato(v.caso.f0, 2),
+        formato(v.r.f0, 4),
+        formato(v.errorF0, 5),
+        v.caso.B.toExponential(1),
+        formato(v.r.B, 7),
+        formato(v.errorB, 3),
+        `${v.r.armonicos.length} / ${v.cantReales}`,
+        formato(v.errorMax, 4),
+        v.r.nota ? v.r.nota.nombreES : '—',
+        v.aprueba ? 'OK' : 'NO CUMPLE',
+      ];
+      for (const texto of celdas) {
+        const td = document.createElement('td');
+        td.textContent = texto;
+        fila.appendChild(td);
+      }
+      fila.lastChild.className = v.aprueba ? 'ok' : 'falla';
+      return fila;
+    }
+
+    function ejecutarValidacion() {
+      const cuerpo = document.getElementById('cuerpo-tabla');
+      const estado = document.getElementById('estado');
+      cuerpo.innerHTML = '';
+      estado.textContent = 'Procesando...';
+      // setTimeout deja que el navegador pinte "Procesando..." antes de los cálculos pesados.
+      setTimeout(() => {
+        let cumplen = 0;
+        for (const caso of CASOS) {
+          const v = validarCaso(caso);
+          if (v.aprueba) cumplen++;
+          cuerpo.appendChild(pintarFila(v));
+        }
+        estado.textContent = `${cumplen} de ${CASOS.length} casos cumplen los criterios.`;
+      }, 50);
+    }
+
+    // Se ejecuta al abrir la página y también con el botón.
+    document.getElementById('btn-validar').addEventListener('click', ejecutarValidacion);
+    ejecutarValidacion();
+  </script>
+</body>
+</html>
