@@ -27,7 +27,8 @@ body {
 .cabecera {
   background: var(--tarjeta);
   border-bottom: 1px solid var(--borde);
-  padding: 20px 16px;
+  /* El texto del encabezado se alinea con el contenido de las tarjetas (mismo ancho máximo). */
+  padding: 20px max(16px, calc((100% - 1100px) / 2 + 16px));
 }
 .cabecera h1 { margin: 0 0 4px; font-size: 1.6rem; }
 .cabecera p { margin: 0; color: var(--texto-suave); max-width: 70ch; }
@@ -59,6 +60,22 @@ h3 { font-size: 1.05rem; margin: 0; }
 }
 .fila-titulo { justify-content: space-between; }
 
+/* Los campos dentro de una fila ocupan el espacio disponible y quedan a la misma altura. */
+.fila > .campo { flex: 1 1 280px; margin-bottom: 0; }
+
+/* Selector de archivo con el mismo estilo que los demás controles. */
+.campo input[type="file"] { width: 100%; font: inherit; font-size: 0.9rem; border: none; padding: 0; }
+.campo input[type="file"]::file-selector-button {
+  font: inherit;
+  padding: 6px 12px;
+  margin-right: 10px;
+  border: 1px solid var(--borde);
+  border-radius: 6px;
+  background: #f6f8fa;
+  color: var(--texto);
+  cursor: pointer;
+}
+
 .campo {
   display: flex;
   flex-direction: column;
@@ -78,9 +95,16 @@ h3 { font-size: 1.05rem; margin: 0; }
 
 .grilla-parametros {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  align-items: end; /* los campos se alinean por abajo aunque la etiqueta tenga una o dos líneas */
   gap: 0 16px;
 }
+
+/* min-width: 0 y ancho 100% evitan que un campo empuje la página hacia los costados en teléfonos. */
+.grilla-parametros > .campo,
+.fila > .campo { min-width: 0; }
+.campo input,
+.campo select { width: 100%; min-width: 0; }
 
 .boton {
   font: inherit;
