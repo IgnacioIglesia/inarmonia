@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inarmonía de notas</title>
+  <link rel="stylesheet" href="css/estilos.css">
+  <!-- Plotly.js: única librería externa, sólo para dibujar los gráficos -->
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+</head>
+<body>
+  <header class="cabecera">
+    <h1>Inarmonía de notas</h1>
+    <p>Medimos la fundamental, la nota, la afinación y la inarmonía (coeficiente B) de una nota sostenida.
+       Todo corre en tu navegador: el audio no se envía a ningún servidor.</p>
+  </header>
+
+  <main class="contenedor">
+
+    <!-- 1. ENTRADA -->
+    <section class="tarjeta">
+      <h2>1. Señal de entrada</h2>
+      <div class="fila">
+        <label class="campo">
+          <span>Archivo de audio (WAV o MP3)</span>
+          <input id="archivo" type="file" accept="audio/*">
+        </label>
+        <button id="btn-grabar" class="boton" type="button">Grabar con micrófono</button>
+        <button id="btn-sintetica" class="boton secundario" type="button">Cargar señal sintética de prueba</button>
+      </div>
+      <p id="info-senal" class="nota">Todavía no hay señal cargada.</p>
+
+      <label class="campo">
+        <span>Archivo de silencio (opcional): sólo ruido de fondo, para medir el zumbido</span>
+        <input id="archivo-silencio" type="file" accept="audio/*">
+      </label>
+      <p id="info-silencio" class="nota"></p>
+    </section>
+
+    <!-- 2. PARÁMETROS -->
+    <section class="tarjeta">
+      <h2>2. Parámetros</h2>
+      <div class="grilla-parametros">
+        <label class="campo">
+          <span>Instrumento</span>
+          <select id="instrumento">
+            <option value="cuerda">Cuerda (piano, guitarra): armónicos k·f0</option>
+            <option value="vibrafono">Vibráfono: parciales no armónicos</option>
+          </select>
+        </label>
+        <label class="campo">
+          <span>Frecuencia de corte del pasa-altos (Hz)</span>
+          <input id="fc-hp" type="number" min="5" max="200" step="1" value="20">
+        </label>
+        <label class="campo">
+          <span>Ventana de análisis</span>
+          <select id="ventana">
+            <option value="blackman-harris">Blackman-Harris (recomendada)</option>
+            <option value="hann">Hann</option>
+          </select>
+        </label>
+        <label class="campo">
+          <span>Inicio del tramo tras el onset (ms)</span>
+          <input id="inicio-ms" type="number" min="0" max="1000" step="10" value="150">
+        </label>
+        <label class="campo">
+          <span>Duración máxima del tramo (s)</span>
+          <input id="duracion-max" type="number" min="0.5" max="8" step="0.5" value="4">
+        </label>
+        <label class="campo">
+          <span>Umbral de picos (dB bajo el máximo)</span>
+          <input id="umbral-picos" type="number" min="-100" max="-20" step="5" value="-70">
+        </label>
+      </div>
+      <div class="fila">
+        <button id="btn-analizar" class="boton" type="button">Analizar</button>
+        <span id="estado" class="estado" role="status"></span>
+      </div>
+    </section>
+
+    <!-- ADVERTENCIAS -->
+    <section id="seccion-advertencias" class="tarjeta oculta">
+      <h2>Advertencias</h2>
+      <ul id="lista-advertencias"></ul>
+    </section>
+
+    <!-- 3. RESUMEN -->
+    <section id="seccion-resultados" class="oculta">
+      <h2>3. Resumen</h2>
+      <div class="tarjetas-resumen">
+        <div class="metrica"><span>Nota</span><strong id="r-nota">—</strong><small id="r-nota-en"></small></div>
+        <div class="metrica"><span>Fundamental f0</span><strong id="r-f0">—</strong><small>Hz</small></div>
+        <div class="metrica"><span>Afinación</span><strong id="r-afinacion">—</strong><small id="r-afinacion-cents"></small></div>
+        <div class="metrica"><span>Inarmonía B</span><strong id="r-b">—</strong><small id="r-r2"></small></div>
+        <div class="metrica"><span id="r-cantidad-etiqueta">Armónicos detectados</span><strong id="r-cantidad">—</strong><small id="r-cantidad-nota"></small></div>
+      </div>
+
+      <!-- 4. TABLA -->
+      <div class="tarjeta">
+        <div class="fila fila-titulo">
+          <h2 id="titulo-tabla">Armónicos</h2>
+          <button id="btn-csv" class="boton secundario" type="button">Exportar CSV</button>
+        </div>
+        <div class="tabla-scroll">
+          <table class="tabla">
+            <thead id="cabecera-tabla"></thead>
+            <tbody id="cuerpo-tabla"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 5. GRÁFICOS -->
+      <h2>4. Gráficos</h2>
+      <p class="nota">Cada gráfico tiene su botón de descarga en PNG para el informe.</p>
+
+      <div class="tarjeta">
+        <div class="fila fila-titulo"><h3>a) Forma de onda y tramo</h3><button class="boton secundario btn-png" data-grafico="g-forma" data-nombre="a-forma-de-onda" type="button">Descargar PNG</button></div>
+        <div id="g-forma" class="grafico"></div>
+      </div>
+      <div class="tarjeta">
+        <div class="fila fila-titulo"><h3>b) Espectro del ruido</h3><button class="boton secundario btn-png" data-grafico="g-ruido" data-nombre="b-espectro-ruido" type="button">Descargar PNG</button></div>
+        <div id="g-ruido" class="grafico"></div>
+      </div>
+      <div class="tarjeta">
+        <div class="fila fila-titulo"><h3>c) Respuesta en frecuencia de los filtros</h3><button class="boton secundario btn-png" data-grafico="g-filtros" data-nombre="c-respuesta-filtros" type="button">Descargar PNG</button></div>
+        <div id="g-filtros" class="grafico"></div>
+      </div>
+      <div class="tarjeta">
+        <div class="fila fila-titulo"><h3>d) Espectro antes y después del filtrado</h3><button class="boton secundario btn-png" data-grafico="g-antes-despues" data-nombre="d-antes-despues" type="button">Descargar PNG</button></div>
+        <div id="g-antes-despues" class="grafico"></div>
+      </div>
+      <div class="tarjeta">
+        <div class="fila fila-titulo"><h3>e) Armónicos vs. ideales</h3><button class="boton secundario btn-png" data-grafico="g-armonicos" data-nombre="e-armonicos" type="button">Descargar PNG</button></div>
+        <div id="g-armonicos" class="grafico"></div>
+      </div>
+      <div class="tarjeta">
+        <div class="fila fila-titulo"><h3>f) Desviación en cents vs. k</h3><button class="boton secundario btn-png" data-grafico="g-desvio" data-nombre="f-desvio-cents" type="button">Descargar PNG</button></div>
+        <div id="g-desvio" class="grafico"></div>
+      </div>
+    </section>
+
+    <footer class="pie">
+      <p>Validación con señales sintéticas: <a href="test/test.html">test/test.html</a>. Explicación completa de cada decisión: <code>RESUMEN.md</code>.</p>
+    </footer>
+  </main>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
