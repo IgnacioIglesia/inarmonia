@@ -20,8 +20,8 @@ La explicación de cada decisión de procesamiento está en [`RESUMEN.md`](RESUM
 1. **Entrada**: archivo WAV o MP3, grabación con micrófono, o una señal sintética de prueba.
 2. **Segmentación**: envolvente RMS, detección del ataque (onset) y elección del tramo sostenido.
 3. **Ruido**: análisis del tramo previo al ataque para detectar zumbido de red de 50 Hz.
-4. **Filtrado**: pasa-altos Butterworth de orden 4 y notches en 50 Hz (sólo si hay zumbido), aplicados con filtfilt (fase cero).
-5. **Análisis**: FFT propia con ventana Blackman-Harris y zero-padding, picos con interpolación parabólica, f0 por suma armónica, búsqueda de armónicos y ajuste de B por mínimos cuadrados.
+4. **Filtrado**: pasa-altos Butterworth de orden 4 y notches en 50 Hz (sólo si hay zumbido), diseñados con la transformación bilineal y aplicados en fase cero por la DFT.
+5. **Análisis**: FFT propia con ventana de Hann y zero-padding, picos sobre el espectro, f0 por autocorrelación, búsqueda de armónicos y ajuste de B por mínimos cuadrados.
 6. **Salidas**: resumen, tabla exportable a CSV, y seis gráficos que se descargan en PNG.
 
 ## Cómo correrlo localmente
@@ -63,9 +63,9 @@ css/estilos.css     estilos
 js/
   audio.js          carga de archivos, grabación y preparación de la señal
   fft.js            FFT radix-2, ventanas y espectro en dB
-  filtros.js        biquads RBJ, Butterworth, notch, filtfilt y análisis de zumbido
+  filtros.js        Butterworth y notch (bilineal), filtrado en fase cero y análisis de zumbido
   segmentacion.js   envolvente RMS, onset y tramo sostenido
-  armonicos.js      picos, f0, armónicos, ajuste de B, nota y afinación
+  armonicos.js      picos, autocorrelación, armónicos, ajuste de B, nota y afinación
   pipeline.js       encadena todos los pasos
   graficos.js       gráficos con Plotly
   main.js           conecta la interfaz con el pipeline
