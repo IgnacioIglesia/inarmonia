@@ -1,18 +1,20 @@
 // armonicos.js
 // ------------------------------------------------------------------
-// Análisis del espectro de la nota:
-//  - detección de picos y refinamiento sub-bin (interpolación parabólica)
-//  - estimación de la fundamental f0 (suma armónica)
-//  - búsqueda de armónicos con el modelo de inarmonía f_k = k·f0·√(1+B·k²)
-//  - ajuste por mínimos cuadrados de f0 y B, con R²
-//  - nota musical y afinación
-//  - modo vibráfono: parciales no armónicos, comparados con 1 : 4 : 10
+// Análisis del espectro de la nota, sólo con herramientas del temario:
+//  - detección de picos sobre la DFT con zero-padding (la precisión sub-bin
+//    la da el zero-padding: el paso del espectro es fs/N_FFT)
+//  - estimación de f0 por autocorrelación (Procesos estocásticos)
+//  - búsqueda de armónicos con el modelo f_k = k·f0·√(1+B·k²)
+//  - ajuste de f0 y B por mínimos cuadrados (álgebra lineal: sistema sobredeterminado)
+//  - nota musical y afinación (temperamento igual, A4 = 440 Hz)
+//  - modo vibráfono: parciales comparados con 1 : 4 : 10
 // ------------------------------------------------------------------
 
-// Un pico es "significativo" si supera el piso de ruido (mediana del espectro) en 15 dB.
-// Por qué 15 y no 10: dentro de una ventana de búsqueda hay cientos de bins de ruido,
-// y el máximo de ese ruido queda ~8 dB por encima de la mediana. Con 10 dB aparecían
-// armónicos falsos en las frecuencias altas.
+import { fft, siguientePotenciaDe2 } from './fft.js';
+
+// Un pico es "significativo" si supera el nivel medio del espectro (en dB) en 15 dB.
+// Dentro de una ventana de búsqueda hay muchos bins de ruido; su máximo queda unos
+// 8 dB por encima del nivel medio. Con 10 dB aparecían armónicos falsos.
 const EXCESO_SIGNIFICATIVO_DB = 15;
 // La búsqueda de armónicos se detiene tras 3 k seguidos sin pico significativo.
 const MAX_FALTAS_SEGUIDAS = 3;
@@ -23,45 +25,28 @@ const NOMBRES_ES = ['Do', 'Do#', 'Re', 'Re#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 
 const NOMBRES_EN = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
 /**
- * Interpolación parabólica sobre 3 bins (k-1, k, k+1) del espectro en dB.
- * Idea: alrededor del máximo, la forma del lóbulo principal se parece a una
- * parábola. Ajustamos la parábola por esos 3 puntos y tomamos su vértice:
- *   δ = ½·(a - c) / (a - 2b + c)     (posición del vértice, en bins, |δ| ≤ ½)
- *   f = (k + δ)·Δf                    frecuencia refinada (sub-bin)
- *   A_dB = b - ¼·(a - c)·δ            amplitud refinada en dB
- * Por qué en dB y no en lineal: el lóbulo en dB es mucho más parecido a una
- * parábola, así que el error de la estimación es menor.
+ * Nivel medio del espectro en dB: promedio aritmético de todos los bins.
+ * Es el "piso" de referencia para decidir si un pico es significativo.
+ * Usamos el promedio de dB (y no de potencia) porque los pocos picos fuertes
+ * casi no lo desplazan: sus valores en dB son pocos frente a millones de bins de ruido.
  */
-export function interpolarPico(dB, k, df) {
-  const a = dB[k - 1];
-  const b = dB[k];
-  const c = dB[k + 1];
-  const denominador = a - 2 * b + c;
-  let delta = denominador === 0 ? 0 : (0.5 * (a - c)) / denominador;
-  delta = Math.max(-0.5, Math.min(0.5, delta));
-  return {
-    freq: (k + delta) * df,
-    dB: b - 0.25 * (a - c) * delta,
-  };
-}
-
-/** Mediana del espectro en dB (muestreada cada 8 bins para que sea rápida). */
-export function medianaDB(espectro) {
-  const muestras = [];
-  for (let k = 0; k < espectro.dB.length; k += 8) muestras.push(espectro.dB[k]);
-  muestras.sort((a, b) => a - b);
-  return muestras[Math.floor(muestras.length / 2)];
+export function nivelMedioDB(espectro) {
+  const dB = espectro.dB;
+  let suma = 0;
+  for (let k = 0; k < dB.length; k++) suma += dB[k];
+  return suma / dB.length;
 }
 
 /**
  * Detección de picos.
  * Un pico es un máximo local (más alto que sus vecinos) que además:
  *   1) está a menos de `umbralDB` (−70 dB) del máximo global, y
- *   2) supera el piso de ruido (mediana) en EXCESO_SIGNIFICATIVO_DB.
+ *   2) supera el nivel medio del espectro en 10 dB (candidatos) — la
+ *      significancia fuerte (15 dB) se aplica después, al buscar armónicos.
+ * La frecuencia del pico es k·Δf, con Δf = fs/N_FFT (0.021 Hz con zero-padding).
  * Luego aplicamos supresión de no-máximos: si dos picos están a menos de
  * `distanciaMinHz`, nos quedamos con el más alto. Esa distancia es 4 bins del
- * tramo original, o sea la mitad del lóbulo principal de la ventana: dos
- * componentes más cercanas que eso no se pueden separar de todos modos.
+ * tramo original, o sea la mitad del lóbulo principal de la ventana.
  */
 export function detectarPicos(espectro, opciones = {}) {
   const { dB, df, dfTramo, fs } = espectro;
@@ -73,16 +58,16 @@ export function detectarPicos(espectro, opciones = {}) {
 
   const kMin = Math.max(1, Math.ceil(fMin / df));
   const kMax = Math.min(dB.length - 2, Math.floor(fMax / df));
-  const piso = medianaDB(espectro);
+  const piso = nivelMedioDB(espectro);
 
   let maxDB = -Infinity;
   for (let k = kMin; k <= kMax; k++) if (dB[k] > maxDB) maxDB = dB[k];
-  const umbral = Math.max(maxDB + umbralRelativo, piso + EXCESO_SIGNIFICATIVO_DB);
+  const umbral = Math.max(maxDB + umbralRelativo, piso + 10);
 
   const candidatos = [];
   for (let k = kMin; k <= kMax; k++) {
     if (dB[k] >= umbral && dB[k] > dB[k - 1] && dB[k] >= dB[k + 1]) {
-      candidatos.push(interpolarPico(dB, k, df));
+      candidatos.push({ freq: k * df, dB: dB[k] });
     }
   }
   candidatos.sort((a, b) => b.dB - a.dB);
@@ -127,44 +112,65 @@ export function picoMasAltoEnVentana(picos, centro, radio) {
 }
 
 /**
- * Estimación de la fundamental por suma armónica.
- * Para cada frecuencia candidata f (todos los picos y sus submúltiplos p/n),
- * sumamos la amplitud lineal de los picos que caen cerca de k·f para k = 1..K.
- * La fundamental es la candidata con mayor suma.
- * Por qué funciona: el verdadero f0 "explica" más armónicos que sus
- * submúltiplos (f0/2 sólo acierta en los pares) y que sus múltiplos (2·f0
- * acierta en los pares de un conjunto que empieza en 2·f0). Así evitamos
- * elegir un armónico como fundamental. K = 10 limita la suma a la zona
- * donde están la mayoría de los parciales.
+ * Autocorrelación de la señal por la DFT (teorema de Wiener-Khinchin):
+ *   r[τ] = Σ x[n]·x[n+τ]  =  IDFT( |X(k)|² )
+ * Para no obtener correlación circular, rellenamos con ceros hasta ≥ 2N.
+ * Devolvemos r normalizada por r[0] (así r[0] = 1).
  */
-export function estimarF0(picos, opciones = {}) {
+export function autocorrelacion(x) {
+  const N = x.length;
+  const M = siguientePotenciaDe2(2 * N);
+  const re = new Float64Array(M);
+  const im = new Float64Array(M);
+  re.set(x);
+  fft(re, im);
+  for (let k = 0; k < M; k++) {
+    re[k] = re[k] * re[k] + im[k] * im[k];
+    im[k] = 0;
+  }
+  // |X|² es real y simétrico: aplicar la DFT otra vez da la autocorrelación (salvo factor M).
+  fft(re, im);
+  const r = new Float64Array(N);
+  for (let tau = 0; tau < N; tau++) r[tau] = re[tau] / re[0];
+  return r;
+}
+
+/**
+ * Estimación gruesa de f0 por autocorrelación.
+ * Una señal periódica con período T se parece a sí misma cuando la desplazamos
+ * T muestras: r[τ] tiene máximos en τ = T, 2T, 3T... La fundamental es el
+ * período más corto con correlación alta: tomamos el PRIMER máximo local cuyo
+ * valor es ≥ 0.9 del máximo del rango. Así no confundimos f0 con 2·f0, cuya
+ * correlación es mucho menor porque sólo acierta en los armónicos pares.
+ * La resolución es de 1 muestra, así que esta f0 es "gruesa": la refinamos después.
+ */
+export function estimarF0PorAutocorrelacion(x, fs, opciones = {}) {
   const fMin = opciones.fMin ?? 20;
   const fMax = opciones.fMax ?? 1500;
-  const K = opciones.K ?? 10;
+  const r = autocorrelacion(x);
+  const tauMin = Math.max(2, Math.floor(fs / fMax));
+  const tauMax = Math.min(r.length - 2, Math.ceil(fs / fMin));
 
-  const candidatos = [];
-  for (const p of picos) {
-    for (let n = 1; n <= 4; n++) {
-      const f = p.freq / n;
-      if (f >= fMin && f <= fMax) candidatos.push(f);
+  let rMax = -Infinity;
+  for (let tau = tauMin; tau <= tauMax; tau++) if (r[tau] > rMax) rMax = r[tau];
+  for (let tau = tauMin; tau <= tauMax; tau++) {
+    const esMaximo = r[tau] >= r[tau - 1] && r[tau] >= r[tau + 1];
+    if (esMaximo && r[tau] >= 0.9 * rMax) {
+      return { f0: fs / tau, tau, correlacion: r[tau] };
     }
   }
+  return null;
+}
 
-  let mejorF0 = null;
-  let mejorSuma = -Infinity;
-  for (const f of candidatos) {
-    let suma = 0;
-    for (let k = 1; k <= K; k++) {
-      const centro = k * f;
-      const p = picoMasAltoEnVentana(picos, centro, 0.15 * f);
-      if (p) suma += 10 ** (p.dB / 20);
-    }
-    if (suma > mejorSuma) {
-      mejorSuma = suma;
-      mejorF0 = f;
-    }
-  }
-  return mejorF0 === null ? null : { f0: mejorF0, suma: mejorSuma };
+/**
+ * Refinamiento de f0 con el espectro: buscamos el pico más alto de la DFT
+ * dentro de ±1 % de la estimación gruesa. Como el paso del espectro es 0.021 Hz,
+ * esto da la frecuencia con precisión de la DFT, mucho mejor que el paso de la
+ * autocorrelación (1 muestra). Si no hay pico en ese entorno, devolvemos la gruesa.
+ */
+export function refinarF0ConPicos(picos, f0Grueso) {
+  const pico = picoMasAltoEnVentana(picos, f0Grueso, 0.01 * f0Grueso);
+  return pico ? pico.freq : f0Grueso;
 }
 
 /**
@@ -172,8 +178,7 @@ export function estimarF0(picos, opciones = {}) {
  * Para cada k predecimos f_pred = k·f0·√(1+B·k²) y buscamos el pico más alto
  * en una ventana alrededor. La ventana crece con k porque la inarmonía y el
  * error de la estimación crecen con k:  tol = min(0.4·f0, f_pred·(0.2% + 0.05%·k)).
- * Ventana más ancha = más chance de agarrar ruido: por eso es angosta en
- * términos relativos. El límite 0.4·f0 evita que la ventana invada al armónico vecino.
+ * El límite 0.4·f0 evita que la ventana invada al armónico vecino.
  * Se detiene al encontrar MAX_FALTAS_SEGUIDAS k sin pico, o al llegar a fs/2.
  */
 export function buscarArmonicos(picos, f0, B, opciones) {
@@ -198,13 +203,13 @@ export function buscarArmonicos(picos, f0, B, opciones) {
 }
 
 /**
- * Ajuste del modelo de inarmonía por mínimos cuadrados.
+ * Ajuste del modelo de inarmonía por mínimos cuadrados (álgebra lineal).
  * Modelo: f_k = k·f0·√(1+B·k²). Elevamos al cuadrado y dividimos por k²:
  *   (f_k / k)² = f0² + f0²·B·k²
- * Eso es una RECTA en la variable x = k² con:
- *   ordenada al origen = f0²,  pendiente = f0²·B.
- * Entonces: f0 = √(ordenada), B = pendiente / ordenada.
- * R² indica qué tan bien la recta explica los datos (1 = perfecto).
+ * Es una recta y = a + b·x con x = k², a = f0², b = f0²·B. Los mínimos
+ * cuadrados resuelven el sistema sobredeterminado (muchos armónicos, dos
+ * incógnitas) minimizando la suma de residuos al cuadrado.
+ * R² mide qué tan bien la recta explica los datos (1 = perfecto).
  */
 export function ajustarB(puntos) {
   const n = puntos.length;
@@ -240,7 +245,7 @@ export function ajustarB(puntos) {
 }
 
 /**
- * Análisis de armónicos (cuerda y piano). Alterna dos pasos hasta que converge:
+ * Análisis de armónicos (cuerda). Alterna dos pasos hasta que converge:
  *   a) buscar armónicos con el f0 y B actuales (al principio B = 0)
  *   b) reajustar f0 y B con los armónicos encontrados
  * Al empezar con B = 0 los armónicos altos quedan fuera de la ventana, pero con
@@ -292,14 +297,17 @@ export function analizarArmonicos(picos, f0Inicial, opciones) {
 
 /**
  * Modo vibráfono: no forzamos k·f0. Tomamos los picos más fuertes (dentro de
- * 50 dB del máximo y por encima del ruido), hasta 12 parciales. La
- * fundamental es el parcial de frecuencia más baja. Para cada parcial damos
+ * 50 dB del máximo y por encima del nivel medio + 15 dB), hasta 12 parciales.
+ * La fundamental es el parcial de frecuencia más baja. Para cada parcial damos
  * la razón f/f0 y la comparamos con la razón teórica más cercana (1, 4, 10).
  * Las barras de vibráfono no son armónicas: sus modos se aproximan a 1 : 4 : 10.
  */
 export function analizarParciales(picos, piso, maxDB) {
-  const fuertes = picos
-    .filter((p) => p.dB >= piso + EXCESO_SIGNIFICATIVO_DB && p.dB >= maxDB - 50)
+  const candidatos = picos.filter((p) => p.dB >= piso + EXCESO_SIGNIFICATIVO_DB && p.dB >= maxDB - 50);
+  // Un pico que tiene otro más fuerte a menos de 2 Hz es lóbulo lateral de la ventana,
+  // no un parcial: los parciales de un vibráfono están separados por cientos de Hz.
+  const fuertes = candidatos
+    .filter((p) => !candidatos.some((q) => q.dB > p.dB && Math.abs(q.freq - p.freq) < 2))
     .sort((a, b) => b.dB - a.dB)
     .slice(0, 12)
     .sort((a, b) => a.freq - b.freq);
@@ -327,11 +335,10 @@ export function analizarParciales(picos, piso, maxDB) {
 
 /**
  * Nota musical y afinación (temperamento igual, A4 = 440 Hz).
- * n = round(69 + 12·log2(f0/440)): número MIDI de la nota más cercana (A4 = 69).
+ * n = round(69 + 12·log₂(f0/440)): número MIDI de la nota más cercana (A4 = 69).
  * f_ideal = 440·2^((n-69)/12): frecuencia exacta de esa nota en temperamento igual.
- * Afinación en Hz = f0 - f_ideal; en cents = 1200·log2(f0/f_ideal).
- * El cent es 1/100 de semitono: el oído distingue ~5 cents, así que es la unidad
- * natural para hablar de afinación.
+ * Afinación en Hz = f0 - f_ideal; en cents = 1200·log₂(f0/f_ideal).
+ * El cent es 1/100 de semitono: el oído distingue ~5 cents.
  */
 export function nombreNota(f0) {
   const n = Math.round(69 + 12 * Math.log2(f0 / 440));

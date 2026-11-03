@@ -1,7 +1,7 @@
 // fft.js
 // ------------------------------------------------------------------
 // Transformada rápida de Fourier (FFT) escrita a mano, ventanas de
-// ponderación (Hann y Blackman-Harris) y la función que convierte un
+// ponderación (Hann) y la función que convierte un
 // tramo de señal en un espectro de magnitud en dB.
 // Todo usa Float64Array para tener la precisión de doble coma flotante.
 // ------------------------------------------------------------------
@@ -96,30 +96,20 @@ export function fft(re, im) {
 }
 
 /**
- * Ventana de ponderación (window function) de N puntos.
+ * Ventana de Hann de N puntos: w[n] = 0.5 - 0.5·cos(2πn/(N-1)).
  * Por qué existe: al cortar un tramo finito de señal aparecen "bordes" que
  * esparcen la energía de cada senoide hacia otras frecuencias (fuga espectral).
- * Multiplicar por una ventana suave reduce ese esparcido.
- *  - 'hann': lóbulo principal angosto (buena resolución) pero lóbulos laterales a -31 dB.
- *  - 'blackman-harris' (4 términos): lóbulos laterales a -92 dB, lóbulo principal
- *    algo más ancho. Es la que usamos por defecto: prioriza que los armónicos
- *    débiles no queden tapados por la fuga de los fuertes.
+ * La ventana va a cero en los bordes y así el corte es suave.
+ * Compromiso: lóbulo principal angosto (buena resolución) con lóbulos
+ * laterales a -31 dB. Para este proyecto alcanza: la validación lo confirma.
+ * Es la ventana "de diseño por ventanas" vista en el temario.
  */
 export function ventana(tipo, N) {
+  if (tipo !== 'hann') throw new Error(`Ventana no soportada: ${tipo}`);
   const w = new Float64Array(N);
   const M = N - 1;
   for (let n = 0; n < N; n++) {
-    if (tipo === 'hann') {
-      w[n] = 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / M);
-    } else {
-      // Coeficientes de Blackman-Harris de 4 términos (Harris, 1978).
-      const x = (2 * Math.PI * n) / M;
-      w[n] =
-        0.35875 -
-        0.48829 * Math.cos(x) +
-        0.14128 * Math.cos(2 * x) -
-        0.01168 * Math.cos(3 * x);
-    }
+    w[n] = 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / M);
   }
   return w;
 }
@@ -146,7 +136,7 @@ export function calcularNFFT(N) {
  * Devuelve también df = fs/nFFT: la separación entre puntos del espectro.
  */
 export function espectroDeTramo(tramo, fs, opciones = {}) {
-  const tipoVentana = opciones.ventana ?? 'blackman-harris';
+  const tipoVentana = opciones.ventana ?? 'hann';
   const N = tramo.length;
   const nFFT = opciones.nFFT ?? calcularNFFT(N);
   const w = ventana(tipoVentana, N);
