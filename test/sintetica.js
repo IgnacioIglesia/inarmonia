@@ -14,7 +14,7 @@
 
 /**
  * Generador pseudoaleatorio determinístico (LCG). Así el resultado de la
- * validación es siempre el mismo y se puede repetir en la defensa.
+ * validación es siempre el mismo y se puede repetir.
  */
 function generadorAleatorio(semilla = 12345) {
   let estado = semilla >>> 0;

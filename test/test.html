@@ -55,12 +55,12 @@
     import { prepararSenal } from '../js/audio.js';
     import { analizarNota } from '../js/pipeline.js';
 
-    // Casos: los tres del enunciado y tres más difíciles (ruido alto, zumbido fuerte,
+    // Casos: tres notas base y tres más difíciles (ruido alto, zumbido fuerte,
     // y una nota que coincide con un armónico del zumbido: 150 Hz).
     const CASOS = [
-      { nombre: 'Enunciado 1', f0: 55, B: 3e-4 },
-      { nombre: 'Enunciado 2', f0: 110, B: 1e-4 },
-      { nombre: 'Enunciado 3', f0: 440, B: 1e-5 },
+      { nombre: 'Nota base 1', f0: 55, B: 3e-4 },
+      { nombre: 'Nota base 2', f0: 110, B: 1e-4 },
+      { nombre: 'Nota base 3', f0: 440, B: 1e-5 },
       { nombre: 'Ruido alto', f0: 55, B: 3e-4, ruidoSigma: 0.03, zumbidoAmp: 0.05 },
       { nombre: 'Zumbido fuerte', f0: 110, B: 1e-4, zumbidoAmp: 0.2 },
       { nombre: 'Coincide con zumbido (150 Hz)', f0: 150, B: 2e-4 },

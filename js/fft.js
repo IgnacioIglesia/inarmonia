@@ -116,7 +116,7 @@ export function ventana(tipo, N) {
 
 /**
  * Número de puntos de la FFT para un tramo de N muestras.
- * Regla del enunciado: al menos 8·N (zero-padding), mínimo 2^19 y máximo 2^21.
+ * Regla de diseño: al menos 8·N (zero-padding), mínimo 2^19 y máximo 2^21.
  * El zero-padding NO agrega información: sólo muestrea el mismo espectro más
  * finamente (interpolación), lo que ayuda a localizar picos con precisión.
  */

@@ -1,6 +1,6 @@
 // pipeline.js
 // ------------------------------------------------------------------
-// Orquesta todo el procesamiento, en el orden en que lo explicamos en la defensa:
+// Orquesta todo el procesamiento, en el orden en que se ejecuta:
 //   1) potencia media por ventanas → onset → tramo sostenido
 //   2) análisis del ruido previo (zumbido de 50 Hz)
 //   3) f0 gruesa por autocorrelación (sobre el tramo crudo) para fijar los filtros
@@ -30,7 +30,7 @@ import {
   nombreNota,
 } from './armonicos.js';
 
-// Valores por defecto de la interfaz (ver RESUMEN.md para la justificación de cada uno).
+// Valores por defecto de la interfaz.
 export const OPCIONES_POR_DEFECTO = {
   instrumento: 'cuerda',        // 'cuerda' (piano, guitarra) o 'vibrafono'
   ventana: 'hann',              // ventana de la DFT (Hann, del temario)
