@@ -1,23 +1,20 @@
 // pipeline.js
 // ------------------------------------------------------------------
-// Orquesta todo el procesamiento, en el orden en que se ejecuta:
+// Orquesta el procesamiento, en el orden en que se ejecuta:
 //   1) potencia media por ventanas → onset → tramo sostenido
-//   2) análisis del ruido previo (zumbido de 50 Hz)
-//   3) f0 gruesa por autocorrelación (sobre el tramo crudo) para fijar los filtros
-//   4) filtrado: Butterworth bilineal + notch, en fase cero (DFT)
+//   2) análisis del ruido previo al ataque (zumbido de 50 Hz)
+//   3) f0 gruesa por autocorrelación, para decidir qué notches aplicar
+//   4) filtrado de los armónicos de 50 Hz (notch) en el tiempo
 //   5) espectro con zero-padding del tramo filtrado → picos → armónicos
-// Vive aparte de main.js (que toca el DOM) para que test/test.html use
-// exactamente el mismo código que la interfaz.
+// Vive aparte de main.js (que toca el DOM) para poder probarlo sin navegador.
 // ------------------------------------------------------------------
 
 import { espectroDeTramo } from './fft.js';
 import { envolventeRMS, detectarOnset, elegirTramo, segmentoPrevioAlOnset } from './segmentacion.js';
 import {
-  disenarPasaAltosButterworth,
   disenarNotch,
-  filtrarFaseCero,
+  aplicarFiltros,
   respuestaFrecuenciaDB,
-  frecuenciasDeZumbido,
   elegirNotches,
   analizarZumbido,
 } from './filtros.js';
@@ -30,18 +27,15 @@ import {
   nombreNota,
 } from './armonicos.js';
 
-export const OPCIONES_POR_DEFECTO = {
-  instrumento: 'cuerda',        // 'cuerda' (piano, guitarra) o 'vibrafono'
-  ventana: 'hann',              // ventana de la DFT (Hann, del temario)
-  fcHP: 20,                     // frecuencia de corte del pasa-altos, en Hz
-  inicioMs: 150,                // el tramo arranca 150 ms después del onset
-  duracionMaxS: 4,              // y dura como máximo 4 s
-  umbralPicosDB: -70,           // picos hasta 70 dB debajo del máximo
-  Q_NOTCH: 30,                  // Q de los notches de 50 Hz
-  silencio: null,               // opcional: Float64Array con sólo ruido
+// Valores fijos del análisis (se explican en la defensa).
+const CONFIG = {
+  inicioMs: 150,        // el tramo arranca 150 ms después del onset (saltea el golpe)
+  duracionMaxS: 4,      // y dura como máximo 4 s
+  umbralPicosDB: -70,   // picos hasta 70 dB debajo del máximo
+  Q_NOTCH: 30,          // ancho del notch: ~1.7 Hz
 };
 
-// Escala logarítmica de frecuencias para graficar la respuesta de los filtros.
+// Escala logarítmica de frecuencias para graficar la respuesta del filtro.
 function frecuenciasLog(fMin, fMax, n) {
   const salida = new Float64Array(n);
   const a = Math.log10(fMin);
@@ -52,74 +46,62 @@ function frecuenciasLog(fMin, fMax, n) {
 
 /**
  * Analiza una nota.
- * x: señal ya preparada (mono, sin DC, normalizada) como Float64Array.
+ * x: señal preparada (mono, sin DC, normalizada) como Float64Array.
  * fs: frecuencia de muestreo en Hz.
- * Devuelve un objeto con todo lo que muestran la tabla y los gráficos.
+ * instrumento: 'cuerda' o 'vibrafono'.
  */
-export function analizarNota(x, fs, opciones = {}) {
-  const cfg = { ...OPCIONES_POR_DEFECTO, ...opciones };
+export function analizarNota(x, fs, instrumento = 'cuerda') {
   const advertencias = [];
 
-  // 1) Segmentación: potencia por ventanas, onset y tramo sostenido.
+  // 1) Segmentación.
   const envolvente = envolventeRMS(x, fs, 10);
   const onsetIdx = detectarOnset(envolvente.envDB);
   const onsetMuestra = onsetIdx * envolvente.L;
   const tramo = elegirTramo(envolvente, onsetIdx, fs, {
-    inicioMs: cfg.inicioMs,
-    duracionMaxS: cfg.duracionMaxS,
+    inicioMs: CONFIG.inicioMs,
+    duracionMaxS: CONFIG.duracionMaxS,
   });
   if (tramo.duracionS < 0.5) {
-    advertencias.push(`El tramo sostenido es muy corto (${tramo.duracionS.toFixed(2)} s). La resolución en frecuencia será pobre.`);
+    advertencias.push(`El tramo sostenido es muy corto (${tramo.duracionS.toFixed(2)} s).`);
   }
   const tramoCrudo = x.slice(tramo.inicio, tramo.fin);
 
-  // 2) Ruido: del archivo de silencio si lo hay, si no del tramo previo al onset.
-  const segmentoRuido = cfg.silencio ?? segmentoPrevioAlOnset(x, fs, onsetMuestra);
+  // 2) Ruido: el segundo previo al ataque.
+  const segmentoRuido = segmentoPrevioAlOnset(x, fs, onsetMuestra);
   const ruido = segmentoRuido
     ? analizarZumbido(segmentoRuido, fs)
     : { detectado: false, frecuencias: [], espectro: null };
   if (!segmentoRuido) {
-    advertencias.push('No hay ruido previo disponible (la nota empieza casi al inicio). No se evalúa el zumbido.');
+    advertencias.push('No hay ruido previo al ataque: no se evalúa el zumbido.');
   }
 
-  // 3) Fundamental gruesa sobre el tramo crudo: la autocorrelación da el período,
-  // y el espectro refina la frecuencia. Hace falta antes de filtrar, para que la
-  // frecuencia de corte del pasa-altos no supere 0.5·f0.
-  const espCrudo = espectroDeTramo(tramoCrudo, fs, { ventana: cfg.ventana });
-  const picosCrudos = detectarPicos(espCrudo, { umbralDB: cfg.umbralPicosDB });
+  // 3) f0 gruesa sobre el tramo crudo: decide qué notches no tocan la nota.
+  const espCrudo = espectroDeTramo(tramoCrudo, fs);
+  const picosCrudos = detectarPicos(espCrudo, { umbralDB: CONFIG.umbralPicosDB });
   const acCruda = estimarF0PorAutocorrelacion(tramoCrudo, fs);
   const f0Grueso = acCruda ? refinarF0ConPicos(picosCrudos.picos, acCruda.f0) : null;
 
-  // 4) Filtros: Butterworth bilineal + notch, aplicados en fase cero.
-  let fc = cfg.fcHP;
-  if (f0Grueso !== null && fc > 0.5 * f0Grueso) {
-    fc = 0.5 * f0Grueso;
-    advertencias.push(`La frecuencia de corte se bajó a ${fc.toFixed(1)} Hz para no superar 0.5·f0.`);
-  }
-  const hp = disenarPasaAltosButterworth(fc, fs, 4);
-
-  // Zumbido: sólo los armónicos de 50 Hz que realmente aparecieron en el ruido.
+  // 4) Filtrado: un notch por cada armónico de 50 Hz que apareció en el ruido.
   const zumbidoNominal = [...new Set(ruido.frecuencias.map((z) => Math.round(z.f / 50) * 50))];
-  const omitidos = [];
   let aplicados = zumbidoNominal;
+  const omitidos = [];
   if (zumbidoNominal.length > 0 && f0Grueso !== null) {
     const decision = elegirNotches(zumbidoNominal, f0Grueso, 3, fs);
     aplicados = decision.aplicar;
     omitidos.push(...decision.omitir);
   }
-  const notches = aplicados.map((f) => disenarNotch(f, fs, cfg.Q_NOTCH));
   for (const o of omitidos) {
     advertencias.push(`No se filtró el zumbido en ${o.f} Hz: ${o.motivo}.`);
   }
-
-  const secciones = [...hp.secciones, ...notches];
-  const xFiltrada = filtrarFaseCero(x, secciones, fs);
+  const notches = aplicados.map((f) => disenarNotch(f, fs, CONFIG.Q_NOTCH));
+  const xFiltrada = aplicarFiltros(x, notches);
   const tramoFiltrado = xFiltrada.slice(tramo.inicio, tramo.fin);
 
   // 5) Análisis de alta resolución del tramo filtrado.
-  const espFiltrado = espectroDeTramo(tramoFiltrado, fs, { ventana: cfg.ventana });
-  const picos = detectarPicos(espFiltrado, { umbralDB: cfg.umbralPicosDB });
+  const espFiltrado = espectroDeTramo(tramoFiltrado, fs);
+  const picos = detectarPicos(espFiltrado, { umbralDB: CONFIG.umbralPicosDB });
 
+  const frecuencias = frecuenciasLog(5, fs / 2, 2000);
   const resultado = {
     fs,
     duracionS: x.length / fs,
@@ -131,53 +113,39 @@ export function analizarNota(x, fs, opciones = {}) {
       zumbidoDetectado: ruido.detectado,
     },
     filtros: {
-      hp: { tipo: hp.tipo, orden: hp.orden, fc, Qs: hp.Qs },
-      notches: { aplicados, Q: cfg.Q_NOTCH, omitidos },
-      secciones,
+      notches: { aplicados, omitidos },
       respuesta: {
-        frecuencias: frecuenciasLog(5, fs / 2, 2000),
-        dBTotal: null,
-        dBHp: null,
+        frecuencias,
+        dBTotal: respuestaFrecuenciaDB(notches, fs, frecuencias),
       },
     },
     espectros: { antes: espCrudo, despues: espFiltrado },
     picos: picos.picos,
-    f0Grueso,
-    modo: cfg.instrumento,
+    modo: instrumento,
     f0: null,
-    B: null,
-    R2: null,
     nota: null,
     armonicos: [],
     parciales: [],
     advertencias,
   };
 
-  // Respuesta en frecuencia para el gráfico (se calcula al final, con las frecuencias guardadas).
-  resultado.filtros.respuesta.dBTotal = respuestaFrecuenciaDB(secciones, fs, resultado.filtros.respuesta.frecuencias);
-  resultado.filtros.respuesta.dBHp = respuestaFrecuenciaDB(hp.secciones, fs, resultado.filtros.respuesta.frecuencias);
-
-  // Modo vibráfono: parciales sin forzar k·f0.
-  if (cfg.instrumento === 'vibrafono') {
+  if (instrumento === 'vibrafono') {
     const r = analizarParciales(picos.picos, picos.piso, picos.maxDB);
     resultado.parciales = r.parciales;
     resultado.f0 = r.f0;
     if (r.f0 === null) advertencias.push('No se encontraron parciales significativos.');
   } else {
-    // f0 en el tramo filtrado: autocorrelación y refinamiento con el espectro.
     const acFiltrada = estimarF0PorAutocorrelacion(tramoFiltrado, fs);
     if (acFiltrada === null) {
-      advertencias.push('No se encontró una fundamental. Revisá la señal.');
+      advertencias.push('No se encontró una fundamental.');
       return resultado;
     }
     const f0Inicial = refinarF0ConPicos(picos.picos, acFiltrada.f0);
     const r = analizarArmonicos(picos.picos, f0Inicial, { fs, piso: picos.piso });
     resultado.f0 = r.f0;
-    resultado.B = r.B;
-    resultado.R2 = r.R2;
     resultado.armonicos = r.armonicos;
     if (r.armonicos.length < 5) {
-      advertencias.push(`Sólo se detectaron ${r.armonicos.length} armónicos: el resultado puede ser poco confiable.`);
+      advertencias.push(`Sólo se detectaron ${r.armonicos.length} armónicos.`);
     }
   }
 
