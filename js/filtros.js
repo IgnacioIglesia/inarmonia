@@ -33,6 +33,7 @@ export function frecuenciaAnalogica(f, fs) {
  * sin solapamiento (no hay aliasing en el diseño), a costo de distorsionar
  * las frecuencias altas; por eso usamos prewarping en la frecuencia de corte.
  */
+
 export function transformacionBilineal(b, a, fs) {
   const [b2, b1, b0] = b;
   const [a2, a1, a0] = a;

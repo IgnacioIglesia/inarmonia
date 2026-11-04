@@ -5,7 +5,6 @@
 // Las funciones que tocan el navegador (AudioContext, getUserMedia) están
 // separadas de la preparación matemática, que sí puede probarse en Node.
 // ------------------------------------------------------------------
-
 /**
  * Preparación de la señal, igual para archivos, micrófono y señales sintéticas:
  *  1) Mono: si hay varios canales, promediamos (L+R)/2. Así el análisis no

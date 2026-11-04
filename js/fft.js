@@ -25,6 +25,7 @@ export function siguientePotenciaDe2(n) {
  * Guardamos el coseno y el seno del ángulo 2πk/N: son los que usa la
  * mariposa de la FFT. Se calculan una sola vez por cada tamaño N.
  */
+
 function tablaDeGiros(N) {
   if (cacheDeGiros.has(N)) return cacheDeGiros.get(N);
   const mitad = N / 2;

@@ -40,6 +40,7 @@ function leerOpciones() {
   };
 }
 
+
 // Muestra fs, duración y bits (si se conocen) de la señal cargada.
 function mostrarInfoSenal() {
   const s = estado.senal;

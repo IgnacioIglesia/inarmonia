@@ -30,7 +30,6 @@ import {
   nombreNota,
 } from './armonicos.js';
 
-// Valores por defecto de la interfaz.
 export const OPCIONES_POR_DEFECTO = {
   instrumento: 'cuerda',        // 'cuerda' (piano, guitarra) o 'vibrafono'
   ventana: 'hann',              // ventana de la DFT (Hann, del temario)

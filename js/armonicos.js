@@ -30,6 +30,7 @@ const NOMBRES_EN = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
  * Usamos el promedio de dB (y no de potencia) porque los pocos picos fuertes
  * casi no lo desplazan: sus valores en dB son pocos frente a millones de bins de ruido.
  */
+
 export function nivelMedioDB(espectro) {
   const dB = espectro.dB;
   let suma = 0;

@@ -35,6 +35,7 @@ const CONFIG = {
  * con unos pocos miles sin perder los picos, que son lo que importa visualmente.
  * Trabaja sólo dentro del rango [fMin, fMax] en Hz.
  */
+
 export function diezmarMaximo(espectro, fMin, fMax, maxPuntos = 6000) {
   const { dB, df } = espectro;
   const kMin = Math.max(0, Math.floor(fMin / df));

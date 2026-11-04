@@ -5,7 +5,6 @@
 //  2) detección del onset (el momento del ataque)
 //  3) elección del tramo sostenido sobre el que se hace el análisis
 // ------------------------------------------------------------------
-
 /**
  * Envolvente RMS en dB, calculada en ventanas consecutivas de ~10 ms.
  * RMS = raíz del promedio de x². Es una medida de energía, no de forma de onda:

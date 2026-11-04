@@ -11,7 +11,6 @@
 // y zumbido de 50 Hz con sus armónicos. Antes de la nota hay 0.6 s con
 // sólo ruido y zumbido, para poder medir el ruido de fondo.
 // ------------------------------------------------------------------
-
 /**
  * Generador pseudoaleatorio determinístico (LCG). Así el resultado de la
  * validación es siempre el mismo y se puede repetir.
