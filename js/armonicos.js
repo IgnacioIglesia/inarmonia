@@ -14,8 +14,8 @@ import { fft, siguientePotenciaDe2 } from './fft.js';
 // Dentro de una ventana de búsqueda hay muchos bins de ruido; su máximo queda unos
 // 8 dB por encima del nivel medio.
 const EXCESO_SIGNIFICATIVO_DB = 15;
-// La búsqueda de armónicos se detiene tras 3 k seguidos sin pico significativo.
-const MAX_FALTAS_SEGUIDAS = 3;
+// Rango de fundamentales que soporta el análisis: de A0 (27,5 Hz) a C8 (4186 Hz), el del piano.
+export const RANGO_F0 = { minHz: 27.5, maxHz: 4186.01 };
 // Límite de armónicos a buscar.
 const K_MAX = 200;
 
@@ -133,7 +133,7 @@ export function autocorrelacion(x) {
  */
 export function estimarF0PorAutocorrelacion(x, fs, opciones = {}) {
   const fMin = opciones.fMin ?? 20;
-  const fMax = opciones.fMax ?? 1500;
+  const fMax = opciones.fMax ?? 1.1 * RANGO_F0.maxHz;
   const r = autocorrelacion(x);
   const tauMin = Math.max(2, Math.floor(fs / fMax));
   const tauMax = Math.min(r.length - 2, Math.ceil(fs / fMin));
@@ -150,6 +150,17 @@ export function estimarF0PorAutocorrelacion(x, fs, opciones = {}) {
 }
 
 /**
+ * f0 gruesa por el espectro: el pico más grave entre los que están a menos de
+ * `margenDB` del más fuerte. Es más confiable que la autocorrelación cuando hay
+ * inarmonía: la señal deja de ser exactamente periódica y la autocorrelación
+ * puede elegir un lag espurio. Devuelve null si no hay ningún pico candidato.
+ */
+export function estimarF0PorEspectro(picos, maxDB, margenDB = 30) {
+  const candidatos = picos.filter((p) => p.dB >= maxDB - margenDB && p.freq >= RANGO_F0.minHz * 0.8);
+  return candidatos.length ? candidatos[0].freq : null;
+}
+
+/**
  * Refina la f0 gruesa con el espectro: pico más alto dentro de ±1 %.
  * Con paso de 0.021 Hz, esto da la frecuencia con mucha más precisión que la autocorrelación.
  */
@@ -159,43 +170,119 @@ export function refinarF0ConPicos(picos, f0Grueso) {
 }
 
 /**
- * Armónicos k = 1, 2, 3...
- * Para cada k esperamos el pico cerca de k·f0. La inarmonía desplaza los armónicos
- * altos en proporción a k³ (desvío ≈ B·k³·f0/2), así que la tolerancia crece con k²:
- *   tolerancia = min(0.35·f0, 0.5 %·k²·f0)
- * El límite 0.35·f0 evita que la ventana capture al armónico vecino (está a f0):
- * si el desvío de un armónico supera ~0.65·f0, la búsqueda se corta y no se inventa un armónico.
- * Un armónico es significativo si su pico supera el nivel medio en 15 dB.
- * La búsqueda se corta tras 3 k seguidos sin pico significativo, o al llegar a fs/2.
+ * Pico significativo (supera el nivel medio en 15 dB) dentro de `tolerancia`
+ * de la frecuencia esperada. Devuelve el pico o null.
+ */
+function buscarArmonico(picos, esperada, tolerancia, piso) {
+  const pico = picoMasAltoEnVentana(picos, esperada, tolerancia);
+  return pico && pico.dB >= piso + EXCESO_SIGNIFICATIVO_DB ? pico : null;
+}
+
+/** Frecuencia predicha por el modelo de cuerda rígida: f_k = k·f0·√(1 + B·k²). */
+function frecuenciaPredicha(k, modelo) {
+  return k * modelo.f0 * Math.sqrt(1 + modelo.B * k * k);
+}
+
+/** Desvío en cents de una frecuencia medida respecto de la predicha por el modelo. */
+function centsRespectoDelModelo(fMedida, k, modelo) {
+  return 1200 * Math.log2(fMedida / frecuenciaPredicha(k, modelo));
+}
+
+/**
+ * Ajuste por mínimos cuadrados del modelo de inarmonía:
+ *   f_k = k·f0·√(1 + B·k²)
+ * Dividiendo por k²: f_k²/k² = f0² + f0²·B·k². Es una recta en x = k² con
+ * ordenada f0² y pendiente f0²·B, así que el ajuste es cerrado (sin iterar).
+ * Necesita al menos 3 armónicos. Devuelve { f0, B } o null.
+ */
+export function ajustarInarmonia(armonicos) {
+  const n = armonicos.length;
+  if (n < 3) return null;
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+  for (const a of armonicos) {
+    const x = a.k * a.k;
+    const y = (a.fMedida * a.fMedida) / x;
+    sx += x;
+    sy += y;
+    sxx += x * x;
+    sxy += x * y;
+  }
+  const pendiente = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+  const ordenada = (sy - pendiente * sx) / n;
+  if (!(ordenada > 0)) return null;
+  return { f0: Math.sqrt(ordenada), B: pendiente / ordenada };
+}
+
+function mediana(valores) {
+  const orden = [...valores].sort((a, b) => a - b);
+  const mitad = orden.length >> 1;
+  return orden.length % 2 ? orden[mitad] : (orden[mitad - 1] + orden[mitad]) / 2;
+}
+
+/**
+ * Ajuste robusto: ajusta, descarta los armónicos que se alejan del modelo más de
+ * 3 veces la mediana de los desvíos (más 10 cents) y reajusta con los que quedan.
+ * Así un pico equivocado (un vecino del armónico) no tuerce f0 ni B.
+ * Devuelve { modelo, usados }; el modelo es null si no hay datos suficientes.
+ */
+function ajustarRobusto(armonicos) {
+  const inicial = ajustarInarmonia(armonicos);
+  if (!inicial) return { modelo: null, usados: armonicos };
+  const desvios = armonicos.map((a) => Math.abs(centsRespectoDelModelo(a.fMedida, a.k, inicial)));
+  const limite = 3 * mediana(desvios) + 10;
+  const usados = armonicos.filter((_, i) => desvios[i] <= limite);
+  return { modelo: ajustarInarmonia(usados) ?? inicial, usados };
+}
+
+/**
+ * Armónicos k = 1, 2, 3... presentes en el espectro, con un ajuste de inarmonía.
+ * Seguimiento: cada armónico se busca donde predice el modelo ajustado con los
+ * anteriores, en una ventana de 1 % (y al menos 4 bins). Así la búsqueda sigue
+ * a la inarmonía sin cortarse, y no entra el vecino de otro armónico.
+ * Al final, ajuste robusto (f0 y B) sobre los armónicos aceptados. Los que no
+ * aparecen, o quedan como atípicos, se listan en noDetectados.
+ * El reporte usa f0 y B del ajuste final; cada desvío es medido − k·f0.
  */
 export function analizarArmonicos(picos, f0Grueso, opciones) {
-  const { fs, piso } = opciones;
-  const presentes = [];
-  let faltasSeguidas = 0;
+  const { fs, piso, dfTramo } = opciones;
 
+  const aceptados = [];
+  const noDetectados = [];
+  let modelo = { f0: f0Grueso, B: 0 };
   for (let k = 1; k <= K_MAX; k++) {
-    const fIdeal = k * f0Grueso;
-    if (fIdeal >= fs / 2) break;
-    const tolerancia = Math.min(0.35 * f0Grueso, 0.005 * k * k * f0Grueso);
-    const pico = picoMasAltoEnVentana(picos, fIdeal, tolerancia);
-    if (pico && pico.dB >= piso + EXCESO_SIGNIFICATIVO_DB) {
-      presentes.push({ k, fIdeal, fMedida: pico.freq, dB: pico.dB });
-      faltasSeguidas = 0;
+    const predicha = frecuenciaPredicha(k, modelo);
+    if (predicha >= fs / 2) break;
+    const tolerancia = Math.min(0.25 * f0Grueso, Math.max(4 * dfTramo, 0.01 * predicha));
+    const pico = buscarArmonico(picos, predicha, tolerancia, piso);
+    if (pico) {
+      aceptados.push({ k, fMedida: pico.freq, dB: pico.dB });
+      modelo = ajustarInarmonia(aceptados) ?? { f0: aceptados[0].fMedida, B: 0 };
     } else {
-      faltasSeguidas++;
-      if (faltasSeguidas >= MAX_FALTAS_SEGUIDAS) break;
+      noDetectados.push(k);
     }
   }
 
-  // La fundamental medida es la del armónico 1 (si está); si no, la gruesa.
-  const primero = presentes.find((p) => p.k === 1);
-  const f0 = primero ? primero.fMedida : f0Grueso;
+  const { modelo: ajuste, usados } = ajustarRobusto(aceptados);
+  const usadosK = new Set(usados.map((u) => u.k));
+  for (const p of aceptados) if (!usadosK.has(p.k)) noDetectados.push(p.k);
+  // Sólo son huecos los k por debajo del armónico más alto detectado: los de orden
+  // mayor caen bajo el ruido y no se reportan como faltantes.
+  const kMasAlto = Math.max(0, ...usados.map((u) => u.k));
+  const huecos = noDetectados.filter((k) => k < kMasAlto).sort((a, b) => a - b);
+
+  // Sin ajuste (menos de 3 armónicos), f0 es el armónico 1 medido, o la gruesa.
+  const primero = usados.find((p) => p.k === 1);
+  const f0 = ajuste ? ajuste.f0 : primero ? primero.fMedida : f0Grueso;
+  const B = ajuste ? ajuste.B : null;
 
   // Amplitud relativa respecto del armónico 1 (si no está, respecto del más alto).
-  const ref = primero ?? presentes.reduce((a, b) => (b.dB > a.dB ? b : a), presentes[0]);
+  const ref = primero ?? usados.reduce((a, b) => (b.dB > a.dB ? b : a), usados[0]);
   const refDB = ref ? ref.dB : 0;
 
-  const armonicos = presentes.map((p) => {
+  const armonicos = usados.map((p) => {
     const ideal = p.k * f0;
     return {
       k: p.k,
@@ -207,7 +294,7 @@ export function analizarArmonicos(picos, f0Grueso, opciones) {
     };
   });
 
-  return { f0, armonicos };
+  return { f0, B, armonicos, noDetectados: huecos };
 }
 
 /**
