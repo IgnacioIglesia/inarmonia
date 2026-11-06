@@ -25,7 +25,17 @@ import {
   analizarArmonicos,
   analizarParciales,
   nombreNota,
+  estimarF0PorEspectro,
+  RANGO_F0,
 } from './armonicos.js';
+
+// f0 gruesa: por el espectro (robusto con inarmonía); si no hay picos, por autocorrelación.
+function f0Gruesa(picos, tramo, fs) {
+  const porEspectro = estimarF0PorEspectro(picos.picos, picos.maxDB);
+  if (porEspectro !== null) return porEspectro;
+  const ac = estimarF0PorAutocorrelacion(tramo, fs);
+  return ac ? refinarF0ConPicos(picos.picos, ac.f0) : null;
+}
 
 // Valores fijos del análisis (se explican en la defensa).
 const CONFIG = {
@@ -78,20 +88,20 @@ export function analizarNota(x, fs, instrumento = 'cuerda') {
   // 3) f0 gruesa sobre el tramo crudo: decide qué notches no tocan la nota.
   const espCrudo = espectroDeTramo(tramoCrudo, fs);
   const picosCrudos = detectarPicos(espCrudo, { umbralDB: CONFIG.umbralPicosDB });
-  const acCruda = estimarF0PorAutocorrelacion(tramoCrudo, fs);
-  const f0Grueso = acCruda ? refinarF0ConPicos(picosCrudos.picos, acCruda.f0) : null;
+  const f0Grueso = f0Gruesa(picosCrudos, tramoCrudo, fs);
 
-  // 4) Filtrado: un notch por cada armónico de 50 Hz que apareció en el ruido.
-  const zumbidoNominal = [...new Set(ruido.frecuencias.map((z) => Math.round(z.f / 50) * 50))];
-  let aplicados = zumbidoNominal;
+  // 4) Filtrado: un notch por cada componente de zumbido medida en el ruido,
+  // en la frecuencia medida (no redondeada a 50 Hz: la red puede desviarse).
+  const zumbidoMedido = ruido.frecuencias.map((z) => z.f);
+  let aplicados = zumbidoMedido;
   const omitidos = [];
-  if (zumbidoNominal.length > 0 && f0Grueso !== null) {
-    const decision = elegirNotches(zumbidoNominal, f0Grueso, 3, fs);
+  if (zumbidoMedido.length > 0 && f0Grueso !== null) {
+    const decision = elegirNotches(zumbidoMedido, f0Grueso, 3, fs);
     aplicados = decision.aplicar;
     omitidos.push(...decision.omitir);
   }
   for (const o of omitidos) {
-    advertencias.push(`No se filtró el zumbido en ${o.f} Hz: ${o.motivo}.`);
+    advertencias.push(`No se filtró el zumbido en ${o.f.toFixed(1)} Hz: ${o.motivo}.`);
   }
   const notches = aplicados.map((f) => disenarNotch(f, fs, CONFIG.Q_NOTCH));
   const xFiltrada = aplicarFiltros(x, notches);
@@ -125,6 +135,8 @@ export function analizarNota(x, fs, instrumento = 'cuerda') {
     f0: null,
     nota: null,
     armonicos: [],
+    B: null,
+    noDetectados: [],
     parciales: [],
     advertencias,
   };
@@ -135,17 +147,37 @@ export function analizarNota(x, fs, instrumento = 'cuerda') {
     resultado.f0 = r.f0;
     if (r.f0 === null) advertencias.push('No se encontraron parciales significativos.');
   } else {
-    const acFiltrada = estimarF0PorAutocorrelacion(tramoFiltrado, fs);
-    if (acFiltrada === null) {
+    const f0Inicial = f0Gruesa(picos, tramoFiltrado, fs);
+    if (f0Inicial === null) {
       advertencias.push('No se encontró una fundamental.');
       return resultado;
     }
-    const f0Inicial = refinarF0ConPicos(picos.picos, acFiltrada.f0);
-    const r = analizarArmonicos(picos.picos, f0Inicial, { fs, piso: picos.piso });
+    const r = analizarArmonicos(picos.picos, f0Inicial, {
+      fs,
+      piso: picos.piso,
+      dfTramo: espFiltrado.dfTramo,
+    });
+    if (r.armonicos.length === 0) {
+      advertencias.push('No se encontró una fundamental: ningún armónico supera el ruido.');
+      return resultado;
+    }
     resultado.f0 = r.f0;
+    resultado.B = r.B;
     resultado.armonicos = r.armonicos;
+    resultado.noDetectados = r.noDetectados;
+    // Margen de 1 % para que A0 y C8 (medidos con un pelo de error) no den falsa alarma.
+    if (r.f0 < RANGO_F0.minHz * 0.99 || r.f0 > RANGO_F0.maxHz * 1.01) {
+      advertencias.push(
+        `La fundamental (${r.f0.toFixed(1)} Hz) está fuera del rango analizado (${RANGO_F0.minHz} a ${RANGO_F0.maxHz.toFixed(0)} Hz, de A0 a C8).`
+      );
+    }
     if (r.armonicos.length < 5) {
       advertencias.push(`Sólo se detectaron ${r.armonicos.length} armónicos.`);
+    }
+    if (r.noDetectados.length > 0) {
+      const lista = r.noDetectados.slice(0, 10).join(', ');
+      const resto = r.noDetectados.length > 10 ? ` y ${r.noDetectados.length - 10} más` : '';
+      advertencias.push(`No se detectaron armónicos por debajo del más alto medido: k = ${lista}${resto}.`);
     }
   }
 
