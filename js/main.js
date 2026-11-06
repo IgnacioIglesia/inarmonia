@@ -65,6 +65,7 @@ function mostrarResumen(r) {
   $('r-afinacion-cents').textContent = r.nota ? `${r.nota.afinacionCents >= 0 ? '+' : ''}${num(r.nota.afinacionCents, 1)} cents` : '';
   $('r-cantidad-etiqueta').textContent = esVibra ? 'Parciales detectados' : 'Armónicos detectados';
   $('r-cantidad').textContent = esVibra ? r.parciales.length : r.armonicos.length;
+  $('r-inarmonia').textContent = esVibra || r.B === null ? '—' : r.B.toExponential(2);
 }
 
 function mostrarAdvertencias(r) {

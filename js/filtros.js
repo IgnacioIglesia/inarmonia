@@ -111,7 +111,9 @@ export function respuestaFrecuenciaDB(secciones, fs, frecuencias) {
 
 /**
  * Frecuencias de zumbido candidatas: 50 Hz y sus armónicos (100, 150...) hasta 500 Hz.
- * Uruguay tiene red de 50 Hz.
+ * 50 Hz es la frecuencia nominal de la red eléctrica de Uruguay (UTE). Es sólo
+ * la lista de dónde buscar: el filtro se aplica únicamente si el zumbido aparece
+ * en el ruido previo a la nota, y en la frecuencia que se mide allí.
  */
 export function frecuenciasDeZumbido(frecuenciaRed = 50, fMax = 500) {
   const lista = [];
@@ -165,7 +167,7 @@ export function analizarZumbido(segmentoRuido, fs, umbralDB = 10) {
     const nivel = promedioDBDeVecindario(esp, kPico, 5, 15);
     const excesoDB = esp.dB[kPico] - nivel;
     if (excesoDB >= umbralDB) {
-      detectadas.push({ f: kPico * esp.df, excesoDB });
+      detectadas.push({ f: frecuenciaInterpolada(esp, kPico), excesoDB });
     }
   }
   return {
@@ -173,6 +175,17 @@ export function analizarZumbido(segmentoRuido, fs, umbralDB = 10) {
     frecuencias: detectadas,
     espectro: esp,
   };
+}
+
+// Frecuencia del pico con interpolación parabólica sobre los tres bins de dB
+// alrededor del máximo: da el centro del lóbulo, no sólo el bin más cercano.
+function frecuenciaInterpolada(esp, k) {
+  const y0 = esp.dB[k - 1];
+  const y1 = esp.dB[k];
+  const y2 = esp.dB[k + 1];
+  const denominador = y0 - 2 * y1 + y2;
+  const desplazamiento = denominador === 0 ? 0 : (0.5 * (y0 - y2)) / denominador;
+  return (k + desplazamiento) * esp.df;
 }
 
 // Promedio en dB de los puntos del espectro en dos anillos alrededor del bin k.
